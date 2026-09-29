@@ -83,82 +83,94 @@ WheelSpeedController::WheelSpeedController(WheelControllerConfig config)
     : config_(config) {}
 
 void WheelSpeedController::reset(float pwm) {
-    // Equivalent to reset_speed_control_variables() for one wheel in the STM32 code.
     speed_integral_ = 0.0f;
     speed_derivative_ = 0.0f;
     previous_speed_error_ = 0.0f;
-    // previous_PWM_ = static_cast<int>(pwm);
-    previous_PWM_ = 0;
+    previous_pwm_ = clamp(pwm, -config_.pwm_limit, config_.pwm_limit);
 }
 
 float WheelSpeedController::update(float target_speed_mm_s,
                                    float measured_speed_mm_s,
                                    float dt_s) {
-    // The STM32 loop only updates when more than 100 us elapsed.
-    if (dt_s <= 0.0001f) {
-        return static_cast<float>(previous_PWM_);
+    // Reject invalid/abnormally late samples so one timing glitch cannot inject
+    // a large integral or derivative step into the motor command.
+    if (dt_s <= 0.0001f || dt_s > 0.1f) {
+        return previous_pwm_;
+    }
+
+    // A stopped wheel must not retain integral energy from a previous movement.
+    if (std::fabs(target_speed_mm_s) < 10.0f) {
+        reset();
+        return 0.0f;
     }
 
     const float speed_error = target_speed_mm_s - measured_speed_mm_s;
 
-    // Exact STM32 derivative formula:
-    // speed_derivative = 0.999 * old +
-    //                    0.001 * (error - previous_error) / dt.
     const float raw_speed_derivative =
         (speed_error - previous_speed_error_) / dt_s;
     speed_derivative_ =
         config_.derivative_filter_previous * speed_derivative_ +
         config_.derivative_filter_new * raw_speed_derivative;
-
-    // Exact STM32 integral update. The integral stores error * seconds;
-    // Ki is applied later in the PWM equation.
-    speed_integral_ += speed_error * dt_s;
     previous_speed_error_ = speed_error;
 
-    // Same PWM_OFFSET logic as set_target_speeds() in the STM32 project.
-    // Note that target == 0 follows the backward branch, just like the original;
-    // the output is explicitly forced to zero below.
     const float PWM_offset =
         target_speed_mm_s > 0.0f
             ? config_.pwm_forward_min - config_.pwm_offset_margin
             : config_.pwm_backward_min + config_.pwm_offset_margin;
 
-    // Exact STM32 speed-control structure:
-    //
-    // PWM = 0.2*old_PWM +
-    //       0.8*(PWM_offset + Kp*error + Kd*derivative + Ki*integral)
-    const float calculated_PWM =
-        config_.pwm_filter_previous * static_cast<float>(previous_PWM_) +
-        config_.pwm_filter_new *
-            (PWM_offset +
-             config_.speed_kp * speed_error +
-             config_.speed_kd * speed_derivative_ +
-             config_.speed_ki * speed_integral_);
-
-    // PWM_R/PWM_L are int in the STM32 code. Keep the same truncation before
-    // saturation and before this value is reused by the next 0.2/0.8 filter step.
-    int PWM = static_cast<int>(calculated_PWM);
-    const int PWM_limit = static_cast<int>(config_.pwm_limit);
-    PWM = std::max(-PWM_limit, std::min(PWM, PWM_limit));
-
-    // Same as: PWM = (target_speed == 0) ? 0 : PWM;
-    if (fabs(target_speed_mm_s) < 10.0f) {
-        PWM = 0;
+    // Build a candidate integral and clamp its *PWM contribution*. Keeping the
+    // limit in PWM units makes the protection independent of the selected Ki.
+    float candidate_integral = speed_integral_ + speed_error * dt_s;
+    if (std::fabs(config_.speed_ki) > 1e-6f) {
+        const float integral_limit =
+            config_.speed_integral_limit_pwm / std::fabs(config_.speed_ki);
+        candidate_integral =
+            clamp(candidate_integral, -integral_limit, integral_limit);
+    } else {
+        candidate_integral = 0.0f;
     }
 
-    // Same STM32 anti-windup/rollback rule. This deliberately does NOT use
-    // back-calculation, conditional integration, or a separate integral clamp.
-    const bool pwm_saturated = PWM == PWM_limit || PWM == -PWM_limit;
-    const bool integral_term_too_large =
-        std::fabs(speed_integral_ * config_.speed_ki) > config_.pwm_limit;
+    auto calculateFilteredPwm = [&](float integral) {
+        return config_.pwm_filter_previous * previous_pwm_ +
+               config_.pwm_filter_new *
+                   (PWM_offset +
+                    config_.speed_kp * speed_error +
+                    config_.speed_kd * speed_derivative_ +
+                    config_.speed_ki * integral);
+    };
 
-    // if (pwm_saturated || integral_term_too_large) {
-    //     const float overshoot = calculated_PWM - static_cast<float>(PWM);
-    //     speed_integral_ -= overshoot * dt_s;
-    // }
+    // Test the candidate integral against the physical actuator limits. If the
+    // output is already saturated/slew-limited and the current error would push
+    // it farther into that limit, reject this cycle's integral accumulation.
+    float candidate_pwm = calculateFilteredPwm(candidate_integral);
+    float limited_candidate_pwm =
+        clamp(candidate_pwm, -config_.pwm_limit, config_.pwm_limit);
 
-    previous_PWM_ = PWM;
-    return static_cast<float>(PWM);
+    const float maximum_pwm_change =
+        std::max(0.0f, config_.pwm_slew_per_s) * dt_s;
+    limited_candidate_pwm =
+        clamp(limited_candidate_pwm,
+              previous_pwm_ - maximum_pwm_change,
+              previous_pwm_ + maximum_pwm_change);
+
+    const bool limited_high = candidate_pwm > limited_candidate_pwm + 1e-4f;
+    const bool limited_low = candidate_pwm < limited_candidate_pwm - 1e-4f;
+    const bool error_pushes_further =
+        (limited_high && speed_error > 0.0f) ||
+        (limited_low && speed_error < 0.0f);
+
+    if (!error_pushes_further) {
+        speed_integral_ = candidate_integral;
+    }
+
+    float pwm = calculateFilteredPwm(speed_integral_);
+    pwm = clamp(pwm, -config_.pwm_limit, config_.pwm_limit);
+    pwm = clamp(pwm,
+                previous_pwm_ - maximum_pwm_change,
+                previous_pwm_ + maximum_pwm_change);
+
+    previous_pwm_ = pwm;
+    return pwm;
 }
 
 DifferentialOdometry::DifferentialOdometry(OdometryConfig config)
@@ -175,6 +187,11 @@ void DifferentialOdometry::reset(const Pose2D& pose,
 
     previous_encoder_count_R_ = encoder_count_R;
     previous_encoder_count_L_ = encoder_count_L;
+
+    speed_distance_accumulator_R_mm_ = 0.0f;
+    speed_distance_accumulator_L_mm_ = 0.0f;
+    speed_time_accumulator_s_ = 0.0f;
+
     initialized_ = true;
 }
 
@@ -208,6 +225,10 @@ void DifferentialOdometry::update(int64_t encoder_count_R,
         previous_encoder_count_L_ = encoder_count_L;
         state_.encoder_count_R = encoder_count_R;
         state_.encoder_count_L = encoder_count_L;
+
+        speed_distance_accumulator_R_mm_ = 0.0f;
+        speed_distance_accumulator_L_mm_ = 0.0f;
+        speed_time_accumulator_s_ = 0.0f;
         return;
     }
 
@@ -244,17 +265,41 @@ void DifferentialOdometry::update(int64_t encoder_count_R,
     state_.pose.absolute_phi_rad += delta_phi_rad;
     state_.pose.phi_rad = wrapAngle(state_.pose.absolute_phi_rad);
 
-    // Match update_speed() from the STM32 code. This is intentionally a fixed
-    // 0.7 / 0.3 filter rather than a time-constant based filter.
-    const float raw_speed_R = distance_R_mm / dt_s;
-    const float raw_speed_L = distance_L_mm / dt_s;
+    // Keep the 1 kHz pose/control loop, but estimate velocity over a longer
+    // encoder window. At 100 mm/s this wheel produces only about 0.63 count per
+    // 1 ms cycle, so a per-cycle speed estimate alternates between 0 and about
+    // 158 mm/s even when the real speed is constant.
+    speed_distance_accumulator_R_mm_ += distance_R_mm;
+    speed_distance_accumulator_L_mm_ += distance_L_mm;
+    speed_time_accumulator_s_ += dt_s;
 
-    state_.wheel_speed.speed_R_mm_s =
-        config_.speed_filter_previous * state_.wheel_speed.speed_R_mm_s +
-        config_.speed_filter_new * raw_speed_R;
-    state_.wheel_speed.speed_L_mm_s =
-        config_.speed_filter_previous * state_.wheel_speed.speed_L_mm_s +
-        config_.speed_filter_new * raw_speed_L;
+    const float measurement_period_s =
+        std::max(0.0001f, config_.speed_measurement_period_s);
+
+    if (speed_time_accumulator_s_ >= measurement_period_s) {
+        const float raw_speed_R =
+            speed_distance_accumulator_R_mm_ / speed_time_accumulator_s_;
+        const float raw_speed_L =
+            speed_distance_accumulator_L_mm_ / speed_time_accumulator_s_;
+
+        const float filter_tau_s = std::max(0.0f, config_.speed_filter_tau_s);
+        const float filter_alpha =
+            filter_tau_s <= 0.0f
+                ? 1.0f
+                : speed_time_accumulator_s_ /
+                      (filter_tau_s + speed_time_accumulator_s_);
+
+        state_.wheel_speed.speed_R_mm_s +=
+            filter_alpha *
+            (raw_speed_R - state_.wheel_speed.speed_R_mm_s);
+        state_.wheel_speed.speed_L_mm_s +=
+            filter_alpha *
+            (raw_speed_L - state_.wheel_speed.speed_L_mm_s);
+
+        speed_distance_accumulator_R_mm_ = 0.0f;
+        speed_distance_accumulator_L_mm_ = 0.0f;
+        speed_time_accumulator_s_ = 0.0f;
+    }
 
     state_.robot_speed.speed_mm_s =
         0.5f * (state_.wheel_speed.speed_R_mm_s + state_.wheel_speed.speed_L_mm_s);
