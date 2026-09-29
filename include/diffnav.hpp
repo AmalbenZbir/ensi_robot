@@ -134,10 +134,14 @@ struct OdometryConfig {
     float wheel_spacing_mm = 308.0f;
     int32_t encoder_counts_per_revolution = 1600;
 
-    // Same speed filter as update_speed() in the STM32 code:
-    // current_speed = 0.7 * previous_filtered_speed + 0.3 * raw_speed.
-    float speed_filter_previous = 0.7f;
-    float speed_filter_new = 0.3f;
+    // Encoder velocity is accumulated over a short window before filtering.
+    // At 100 mm/s one encoder tick arrives roughly every 1.6 ms, so estimating
+    // velocity from every 1 ms control cycle is too quantized.
+    float speed_measurement_period_s = 0.005f;
+
+    // Time-constant based low-pass filter for the windowed wheel-speed estimate.
+    // This keeps the estimator stable even when the control-loop timing jitters.
+    float speed_filter_tau_s = 0.030f;
 };
 
 // These names intentionally follow the original navigation code terminology.
@@ -197,6 +201,14 @@ struct WheelControllerConfig {
     // forward  -> PWM_forward_min - 30
     // backward -> PWM_backward_min + 30
     float pwm_offset_margin = 30.0f;
+
+    // Integral contribution is bounded in PWM units to prevent windup while
+    // the wheel is accelerating or the actuator is saturated.
+    float speed_integral_limit_pwm = 260.0f;
+
+    // Maximum PWM change per second. At the 1 kHz control rate this limits
+    // a single update to about 9 PWM counts instead of a 400+ count jump.
+    float pwm_slew_per_s = 9000.0f;
 };
 
 WheelSpeeds robotSpeedToWheelSpeeds(float speed_mm_s,
@@ -225,7 +237,7 @@ private:
     float speed_integral_ = 0.0f;
     float speed_derivative_ = 0.0f;
     float previous_speed_error_ = 0.0f;
-    int previous_PWM_ = 0;
+    float previous_pwm_ = 0.0f;
 };
 
 class DifferentialOdometry {
@@ -246,6 +258,11 @@ private:
     OdometryState state_{};
     int64_t previous_encoder_count_R_ = 0;
     int64_t previous_encoder_count_L_ = 0;
+
+    float speed_distance_accumulator_R_mm_ = 0.0f;
+    float speed_distance_accumulator_L_mm_ = 0.0f;
+    float speed_time_accumulator_s_ = 0.0f;
+
     bool initialized_ = false;
 };
 
