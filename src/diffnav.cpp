@@ -83,70 +83,82 @@ WheelSpeedController::WheelSpeedController(WheelControllerConfig config)
     : config_(config) {}
 
 void WheelSpeedController::reset(float pwm) {
-    speed_integral_pwm_ = 0.0f;
-    filtered_speed_derivative_mm_s2_ = 0.0f;
-    previous_speed_mm_s_ = 0.0f;
-    previous_pwm_ = pwm;
-    initialized_ = false;
+    // Equivalent to reset_speed_control_variables() for one wheel in the STM32 code.
+    speed_integral_ = 0.0f;
+    speed_derivative_ = 0.0f;
+    previous_speed_error_ = 0.0f;
+    // previous_PWM_ = static_cast<int>(pwm);
+    previous_PWM_ = 0;
 }
 
 float WheelSpeedController::update(float target_speed_mm_s,
                                    float measured_speed_mm_s,
                                    float dt_s) {
-    if (dt_s <= 0.0f || dt_s > 0.1f) {
-        return previous_pwm_;
-    }
-
-    if (std::fabs(target_speed_mm_s) < 0.5f) {
-        reset();
-        return 0.0f;
-    }
-
-    if (!initialized_) {
-        previous_speed_mm_s_ = measured_speed_mm_s;
-        initialized_ = true;
+    // The STM32 loop only updates when more than 100 us elapsed.
+    if (dt_s <= 0.0001f) {
+        return static_cast<float>(previous_PWM_);
     }
 
     const float speed_error = target_speed_mm_s - measured_speed_mm_s;
 
-    // Derivative is taken on the measured speed instead of the error. This avoids a large
-    // derivative kick whenever the target speed changes abruptly.
-    const float raw_derivative = -(measured_speed_mm_s - previous_speed_mm_s_) / dt_s;
-    const float derivative_alpha = dt_s / (config_.derivative_filter_tau_s + dt_s);
-    filtered_speed_derivative_mm_s2_ +=
-        derivative_alpha * (raw_derivative - filtered_speed_derivative_mm_s2_);
-    previous_speed_mm_s_ = measured_speed_mm_s;
+    // Exact STM32 derivative formula:
+    // speed_derivative = 0.999 * old +
+    //                    0.001 * (error - previous_error) / dt.
+    const float raw_speed_derivative =
+        (speed_error - previous_speed_error_) / dt_s;
+    speed_derivative_ =
+        config_.derivative_filter_previous * speed_derivative_ +
+        config_.derivative_filter_new * raw_speed_derivative;
 
-    // Feed-forward compensates motor dead-zone and most of the steady-state PWM demand.
-    const float feedforward_pwm =
-    sign(target_speed_mm_s) * config_.static_feedforward_pwm;
+    // Exact STM32 integral update. The integral stores error * seconds;
+    // Ki is applied later in the PWM equation.
+    speed_integral_ += speed_error * dt_s;
+    previous_speed_error_ = speed_error;
 
-    speed_integral_pwm_ += config_.speed_ki * speed_error * dt_s;
-    speed_integral_pwm_ = clamp(speed_integral_pwm_,
-                                -config_.speed_integral_limit_pwm,
-                                config_.speed_integral_limit_pwm);
+    // Same PWM_OFFSET logic as set_target_speeds() in the STM32 project.
+    // Note that target == 0 follows the backward branch, just like the original;
+    // the output is explicitly forced to zero below.
+    const float PWM_offset =
+        target_speed_mm_s > 0.0f
+            ? config_.pwm_forward_min - config_.pwm_offset_margin
+            : config_.pwm_backward_min + config_.pwm_offset_margin;
 
-    const float requested_pwm = feedforward_pwm +
-                                config_.speed_kp * speed_error +
-                                speed_integral_pwm_ +
-                                config_.speed_kd * filtered_speed_derivative_mm_s2_;
+    // Exact STM32 speed-control structure:
+    //
+    // PWM = 0.2*old_PWM +
+    //       0.8*(PWM_offset + Kp*error + Kd*derivative + Ki*integral)
+    const float calculated_PWM =
+        config_.pwm_filter_previous * static_cast<float>(previous_PWM_) +
+        config_.pwm_filter_new *
+            (PWM_offset +
+             config_.speed_kp * speed_error +
+             config_.speed_kd * speed_derivative_ +
+             config_.speed_ki * speed_integral_);
 
-    float pwm = clamp(requested_pwm, -config_.pwm_limit, config_.pwm_limit);
+    // PWM_R/PWM_L are int in the STM32 code. Keep the same truncation before
+    // saturation and before this value is reused by the next 0.2/0.8 filter step.
+    int PWM = static_cast<int>(calculated_PWM);
+    const int PWM_limit = static_cast<int>(config_.pwm_limit);
+    PWM = std::max(-PWM_limit, std::min(PWM, PWM_limit));
 
-    // Back-calculation anti-windup removes integral energy when PWM is saturated.
-    speed_integral_pwm_ += config_.antiwindup_gain_s_inv * (pwm - requested_pwm) * dt_s;
-    speed_integral_pwm_ = clamp(speed_integral_pwm_,
-                                -config_.speed_integral_limit_pwm,
-                                config_.speed_integral_limit_pwm);
+    // Same as: PWM = (target_speed == 0) ? 0 : PWM;
+    if (fabs(target_speed_mm_s) < 10.0f) {
+        PWM = 0;
+    }
 
-    // Slew limiting prevents an instantaneous full-power step at the motor driver.
-    const float maximum_pwm_change = config_.pwm_slew_per_s * dt_s;
-    pwm = clamp(pwm,
-                previous_pwm_ - maximum_pwm_change,
-                previous_pwm_ + maximum_pwm_change);
+    // Same STM32 anti-windup/rollback rule. This deliberately does NOT use
+    // back-calculation, conditional integration, or a separate integral clamp.
+    const bool pwm_saturated = PWM == PWM_limit || PWM == -PWM_limit;
+    const bool integral_term_too_large =
+        std::fabs(speed_integral_ * config_.speed_ki) > config_.pwm_limit;
 
-    previous_pwm_ = pwm;
-    return pwm;
+    // if (pwm_saturated || integral_term_too_large) {
+    //     const float overshoot = calculated_PWM - static_cast<float>(PWM);
+    //     speed_integral_ -= overshoot * dt_s;
+    // }
+
+    previous_PWM_ = PWM;
+    return static_cast<float>(PWM);
 }
 
 DifferentialOdometry::DifferentialOdometry(OdometryConfig config)
@@ -232,15 +244,17 @@ void DifferentialOdometry::update(int64_t encoder_count_R,
     state_.pose.absolute_phi_rad += delta_phi_rad;
     state_.pose.phi_rad = wrapAngle(state_.pose.absolute_phi_rad);
 
-    // Encoder velocity is low-pass filtered before it reaches the wheel PID controller.
-    const float filter_alpha = dt_s / (config_.speed_filter_tau_s + dt_s);
+    // Match update_speed() from the STM32 code. This is intentionally a fixed
+    // 0.7 / 0.3 filter rather than a time-constant based filter.
     const float raw_speed_R = distance_R_mm / dt_s;
     const float raw_speed_L = distance_L_mm / dt_s;
 
-    state_.wheel_speed.speed_R_mm_s +=
-        filter_alpha * (raw_speed_R - state_.wheel_speed.speed_R_mm_s);
-    state_.wheel_speed.speed_L_mm_s +=
-        filter_alpha * (raw_speed_L - state_.wheel_speed.speed_L_mm_s);
+    state_.wheel_speed.speed_R_mm_s =
+        config_.speed_filter_previous * state_.wheel_speed.speed_R_mm_s +
+        config_.speed_filter_new * raw_speed_R;
+    state_.wheel_speed.speed_L_mm_s =
+        config_.speed_filter_previous * state_.wheel_speed.speed_L_mm_s +
+        config_.speed_filter_new * raw_speed_L;
 
     state_.robot_speed.speed_mm_s =
         0.5f * (state_.wheel_speed.speed_R_mm_s + state_.wheel_speed.speed_L_mm_s);

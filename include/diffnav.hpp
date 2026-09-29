@@ -130,10 +130,14 @@ struct NavCommand {
 
 struct OdometryConfig {
     float wheel_diameter_R_mm = 80.68052560698061f;
-    float wheel_diameter_L_mm = 80.47336644583292f;
+    float wheel_diameter_L_mm = 80.47336644583292f;;
     float wheel_spacing_mm = 308.0f;
     int32_t encoder_counts_per_revolution = 1600;
-    float speed_filter_tau_s = 0.030f;
+
+    // Same speed filter as update_speed() in the STM32 code:
+    // current_speed = 0.7 * previous_filtered_speed + 0.3 * raw_speed.
+    float speed_filter_previous = 0.7f;
+    float speed_filter_new = 0.3f;
 };
 
 // These names intentionally follow the original navigation code terminology.
@@ -169,16 +173,30 @@ struct NavigatorConfig {
     uint16_t settle_cycles = 8;
 };
 
+// Speed-controller parameters intentionally mirror the STM32 SPEED loop.
 struct WheelControllerConfig {
-    float speed_kp = 0.80f;
-    float speed_ki = 3.0f;
+    float speed_kp = 15.0f;
+    float speed_ki = 200.0f;
     float speed_kd = 0.0f;
-    float derivative_filter_tau_s = 0.025f;
-    float antiwindup_gain_s_inv = 8.0f;
-    float speed_integral_limit_pwm = 260.0f;
+
+    // STM32 derivative filter:
+    // derivative = 0.999 * derivative + 0.001 * raw_derivative.
+    float derivative_filter_previous = 0.999f;
+    float derivative_filter_new = 0.001f;
+
+    // STM32 PWM filter:
+    // PWM = 0.2 * previous_PWM + 0.8 * newly_calculated_PWM.
+    float pwm_filter_previous = 0.2f;
+    float pwm_filter_new = 0.8f;
+
     float pwm_limit = 1023.0f;
-    float static_feedforward_pwm = 370.0f;
-    float pwm_slew_per_s = 9000.0f;
+    float pwm_forward_min = 370.0f;
+    float pwm_backward_min = -370.0f;
+
+    // Same PWM_OFFSET rule as the STM32 code:
+    // forward  -> PWM_forward_min - 30
+    // backward -> PWM_backward_min + 30
+    float pwm_offset_margin = 30.0f;
 };
 
 WheelSpeeds robotSpeedToWheelSpeeds(float speed_mm_s,
@@ -202,11 +220,12 @@ public:
 
 private:
     WheelControllerConfig config_{};
-    float speed_integral_pwm_ = 0.0f;
-    float filtered_speed_derivative_mm_s2_ = 0.0f;
-    float previous_speed_mm_s_ = 0.0f;
-    float previous_pwm_ = 0.0f;
-    bool initialized_ = false;
+
+    // Names and units follow the STM32 controller variables.
+    float speed_integral_ = 0.0f;
+    float speed_derivative_ = 0.0f;
+    float previous_speed_error_ = 0.0f;
+    int previous_PWM_ = 0;
 };
 
 class DifferentialOdometry {

@@ -79,11 +79,11 @@ void MotorDriver::writeMotor(int forward_pin,
                              int backward_pwm_channel,
                              float pwm) {
     // Meme securite qu'avant : on limite la commande a la plage autorisee
-    pwm = std::fmax(-static_cast<float>(robot_config::pwm_max),
-                    std::fmin(static_cast<float>(robot_config::pwm_max), pwm));
+    pwm = std::fmax(-static_cast<float>(robot_config::PWM_max),
+                    std::fmin(static_cast<float>(robot_config::PWM_max), pwm));
 
     // Meme logique de zone morte qu'avant
-    if (std::fabs(pwm) < robot_config::pwm_deadzone) {
+    if (std::fabs(pwm) < robot_config:: PWM_offset_margin) {
         pwm = 0.0f;
     }
 
