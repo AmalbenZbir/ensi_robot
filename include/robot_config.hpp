@@ -49,10 +49,10 @@ constexpr int PWM_offset_margin = 30;
 // STM32 speed PID gains.
 constexpr float kpS_R = 15.0f;
 constexpr float kdS_R = 0.0f;
-constexpr float kiS_R = 200.0f;
+constexpr float kiS_R = 20.0f;
 constexpr float kpS_L = 15.0f;
 constexpr float kdS_L = 0.0f;
-constexpr float kiS_L = 200.0f;
+constexpr float kiS_L = 20.0f;
 
 // -----------------------------------------------------------------------------
 // Encoder pins

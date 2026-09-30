@@ -4,22 +4,21 @@
 #include "diffnav.hpp"
 #include "robot_config.hpp"
 
-// ---------- Reglages du test (a modifier entre les essais) ----------
-const float TARGET_SPEED_MM_S = 100.0f;   // roue droite = +cible, roue gauche = -cible
+// ---------- Reglages du test ----------
+const float MOVE_DISTANCE_MM = 1000.0f;   // distance a parcourir
+const float CRUISE_SPEED_MM_S = 200.0f;   // vitesse de croisiere demandee
 
-// Gains (un jeu par roue, pour pouvoir les separer plus tard)
-const float KP_R = 2.0f;
-const float KI_R = 15.0f;
-const float KP_L =2.0f;
-const float KI_L = 15.0f;
+const float KP_R = 10.0f;
+const float KI_R = 50.0f;
+const float KP_L = 10.0f;
+const float KI_L = 50.0f;
 
-// Zones mortes mesurees. Les valeurs "backward" sont NEGATIVES (comme dans robot_config.hpp)
 const float R_FORWARD_MIN  =  370.0f;
-const float R_BACKWARD_MIN = -370.0f;   // <-- a MESURER (valeur provisoire)
+const float R_BACKWARD_MIN = -370.0f;
 const float L_FORWARD_MIN  =  370.0f;
-const float L_BACKWARD_MIN = -370.0f;   // <-- a MESURER (valeur provisoire)
+const float L_BACKWARD_MIN = -370.0f;
 
-const int PLOT_EVERY = 20;              // 1 point toutes les 20 iterations (~50 Hz)
+const int PLOT_EVERY = 20;
 // ---------------------------------------------------------------------
 
 const unsigned long PERIOD_US = robot_config::control_period_us;
@@ -27,6 +26,8 @@ const unsigned long PERIOD_US = robot_config::control_period_us;
 EncoderPcnt encoders;
 MotorDriver motors;
 diffnav::DifferentialOdometry odometry(robot_config::odometryConfig());
+diffnav::Navigator navigator(robot_config::navigatorConfig());
+
 diffnav::WheelSpeedController controller_R(robot_config::wheelControllerConfig_R());
 diffnav::WheelSpeedController controller_L(robot_config::wheelControllerConfig_L());
 
@@ -61,7 +62,11 @@ void setup() {
     delay(3000);   // le temps de connecter Teleplot et de poser le robot
 
     EncoderCounts c = encoders.snapshot();
-    odometry.reset(diffnav::Pose2D{}, c.encoder_count_R, c.encoder_count_L);
+    diffnav::Pose2D start_pose{};
+    odometry.reset(start_pose, c.encoder_count_R, c.encoder_count_L);
+
+    // Demarre le mouvement une seule fois, ici, avant d'entrer dans loop()
+    navigator.moveForward(start_pose, MOVE_DISTANCE_MM, CRUISE_SPEED_MM_S);
 
     last_us = micros();
     next_us = last_us + PERIOD_US;
@@ -69,19 +74,6 @@ void setup() {
 
 void loop() {
     if (finished) return;
-
-    // Arret sur commande : la lettre 's' recue par le port serie
-    // if (Serial.available() > 0) {
-    //     char c = Serial.read();
-    //     if (c == 's' || c == 'S') {
-    //         motors.stop();
-    //         controller_R.reset();
-    //         controller_L.reset();
-    //         finished = true;
-    //         Serial.println("FIN");
-    //         return;
-    //     }
-    // }
 
     unsigned long now = micros();
     if ((long)(now - next_us) < 0) return;
@@ -94,25 +86,29 @@ void loop() {
     EncoderCounts counts = encoders.snapshot();
     odometry.update(counts.encoder_count_R, counts.encoder_count_L, dt_s);
 
-    // Vitesses des deux roues calculees par diffnav
+    // Le Navigator calcule les vitesses de roues cibles a partir de l'etat actuel
+    diffnav::WheelSpeeds target_speeds = navigator.update(odometry.state(), dt_s);
+
     float speed_R = odometry.state().wheel_speed.speed_R_mm_s;
     float speed_L = odometry.state().wheel_speed.speed_L_mm_s;
 
-    // Cibles opposees : le robot tourne sur lui-meme
-    float target_R =  TARGET_SPEED_MM_S;
-    float target_L = TARGET_SPEED_MM_S;
-
-    float pwm_R = controller_R.update(target_R, speed_R, dt_s);
-    float pwm_L = controller_L.update(target_L, speed_L, dt_s);
+    float pwm_R = controller_R.update(target_speeds.speed_R_mm_s, speed_R, dt_s);
+    float pwm_L = controller_L.update(target_speeds.speed_L_mm_s, speed_L, dt_s);
     motors.write(pwm_R, pwm_L);
 
-    // // Format Teleplot : une ligne par courbe
-     if (++cycle_count % PLOT_EVERY == 0) {
-    //    Serial.print(">target_R:"); Serial.println(target_R);
+    if (++cycle_count % PLOT_EVERY == 0) {
+        Serial.print(">target_R:"); Serial.println(target_speeds.speed_R_mm_s);
         Serial.print(">speed_R:");  Serial.println(speed_R);
-        Serial.print(">pwm_R:");    Serial.println(pwm_R);
-    //     Serial.print(">target_L:"); Serial.println(target_L);
-    //     Serial.print(">speed_L:");  Serial.println(speed_L);
-    //     Serial.print(">pwm_L:");    Serial.println(pwm_L);
+        Serial.print(">x_mm:");     Serial.println(odometry.state().pose.x_mm);
+        Serial.print(">y_mm:");     Serial.println(odometry.state().pose.y_mm);
+        Serial.print(">lane_error:"); Serial.println(navigator.status().lane_error_mm);
+        Serial.print(">phi_error:");  Serial.println(navigator.status().phi_error_rad);
+    }
+
+    // Arret automatique une fois le mouvement termine
+    if (navigator.status().result == diffnav::MotionResult::SUCCEEDED) {
+        motors.stop();
+        finished = true;
+        Serial.println("FIN, mouvement termine");
     }
 }

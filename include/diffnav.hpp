@@ -159,15 +159,15 @@ struct NavigatorConfig {
     float rotating_breaking_acceleration_mm_s2 = 900.0f;
     float rotating_minimum_speed_mm_s = 35.0f;
 
-    float phi_correction_kp = 4.5f;
-    float lane_correction_gain_s_inv = 3.0f;
-    float lane_correction_angle_gain = 2.4f;
+    float phi_correction_kp = 3.5f; 
+    float lane_correction_gain_s_inv =1.0f;
+    float lane_correction_angle_gain = 2.0f;
     float lane_correction_softening_mm_s = 90.0f;
     float maximum_angular_speed_rad_s = 5.5f;
 
-    float final_position_kp_s_inv = 3.0f;
+    float final_position_kp_s_inv = 2.0f;
     float final_speed_limit_mm_s = 120.0f;
-    float final_phi_kp = 5.0f;
+    float final_phi_kp = 2.0f;
 
     float position_tolerance_mm = 2.0f;
     float lane_tolerance_mm = 3.0f;
