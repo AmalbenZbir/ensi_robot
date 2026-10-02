@@ -76,8 +76,8 @@ constexpr uint32_t encoder_glitch_filter_ns = 1000;
 // -----------------------------------------------------------------------------
 // The naming intentionally follows the original PAMI/STM32 navigation code: wheel
 // diameters plus wheel spacing, rather than generic robotics names such as track width.
-constexpr float wheel_diameter_R_mm = 80.68052560698061f;
-constexpr float wheel_diameter_L_mm = 80.47336644583292f;
+constexpr float wheel_diameter_R_mm = 81.00808322364194f;
+constexpr float wheel_diameter_L_mm = 80.80008300995295f;
 constexpr float wheel_spacing_mm = 308.0f;
 
 // -----------------------------------------------------------------------------

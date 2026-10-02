@@ -9,7 +9,7 @@
 // =====================================================================
 
 // ---------- La rotation testee ----------
-const float ROTATION_ANGLE_DEG  = -20.0f;   // positif = antihoraire, negatif = horaire
+const float ROTATION_ANGLE_DEG  = 3600.0f;   // positif = antihoraire, negatif = horaire
 const float ROTATING_SPEED_MM_S = 200.0f;  // vitesse de croisiere des roues (mm/s)
 const unsigned long TIMEOUT_MS  = 8000;    // abandon si la rotation ne se termine pas
 
