@@ -131,7 +131,7 @@ struct NavCommand {
 struct OdometryConfig {
     float wheel_diameter_R_mm = 81.00808322364194f;
     float wheel_diameter_L_mm = 80.80008300995295f;
-    float wheel_spacing_mm = 308.0f;
+    float wheel_spacing_mm = 311.2313829856f;
     int32_t encoder_counts_per_revolution = 1600;
 
     // Encoder velocity is accumulated over a short window before filtering.
