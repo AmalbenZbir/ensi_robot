@@ -9,7 +9,7 @@
 // =====================================================================
 
 // ---------- La rotation testee ----------
-const float ROTATION_ANGLE_DEG  = 50.0f;   // positif = antihoraire, negatif = horaire
+const float ROTATION_ANGLE_DEG  = -20.0f;   // positif = antihoraire, negatif = horaire
 const float ROTATING_SPEED_MM_S = 200.0f;  // vitesse de croisiere des roues (mm/s)
 const unsigned long TIMEOUT_MS  = 8000;    // abandon si la rotation ne se termine pas
 
@@ -36,7 +36,7 @@ const float ROT_BRAKE_MM_S2     = 900.0f;  // deceleration avant la cible
 const float ROT_MIN_SPEED_MM_S  = 35.0f;   // vitesse mini du profil
 
 // ---------- 4) Fin de rotation (Navigator) ----------
-const float FINAL_PHI_KP        = 5.0f;    // gain P dans les derniers ~2 degres
+const float FINAL_PHI_KP        = 6.0f;    // gain P dans les derniers ~2 degres
 const float PHI_TOLERANCE_DEG   = 1.0f;    // tolerance d'arrivee
 const float STOPPED_SPEED_MM_S  = 12.0f;   // seuil "robot arrete"
 const uint16_t SETTLE_CYCLES    = 8;       // cycles consecutifs dans la tolerance
@@ -184,33 +184,32 @@ void loop() {
     // --- Traces Teleplot ---
     if (++cycle_count % PLOT_EVERY == 0) {
         Serial.print(">phi_deg:");     Serial.println(phi_now * DEG_PER_RAD);
-        Serial.print(">cible_deg:");   Serial.println(target_absolute_phi_rad * DEG_PER_RAD);
         Serial.print(">erreur_deg:");  Serial.println(error_rad * DEG_PER_RAD);
-        Serial.print(">consigne_R:");  Serial.println(target_speeds.speed_R_mm_s);
-        Serial.print(">vitesse_R:");   Serial.println(speed_R);
-        Serial.print(">consigne_L:");  Serial.println(target_speeds.speed_L_mm_s);
-        Serial.print(">vitesse_L:");   Serial.println(speed_L);
-        Serial.print(">x_mm:");        Serial.println(odometry.state().pose.x_mm);
-        Serial.print(">y_mm:");        Serial.println(odometry.state().pose.y_mm);
+        // Serial.print(">consigne_R:");  Serial.println(target_speeds.speed_R_mm_s);
+        // Serial.print(">vitesse_R:");   Serial.println(speed_R);
+        // Serial.print(">consigne_L:");  Serial.println(target_speeds.speed_L_mm_s);
+        // Serial.print(">vitesse_L:");   Serial.println(speed_L);
+        // Serial.print(">x_mm:");        Serial.println(odometry.state().pose.x_mm);
+        // Serial.print(">y_mm:");        Serial.println(odometry.state().pose.y_mm);
     }
 
     // --- Fin du test ---
-    const diffnav::MotionResult result = navigator.status().result;
-    const char* outcome = nullptr;
+    // const diffnav::MotionResult result = navigator.status().result;
+    // const char* outcome = nullptr;
 
-    if (result == diffnav::MotionResult::SUCCEEDED) {
-        outcome = "OK";
-    } else if (result == diffnav::MotionResult::FAULTED ||
-               result == diffnav::MotionResult::CANCELLED) {
-        outcome = "ECHEC (faute ou annulation)";
-    } else if (millis() - start_ms > TIMEOUT_MS) {
-        navigator.stop();
-        outcome = "TIMEOUT (robot bloque hors tolerance ?)";
-    }
+    // if (result == diffnav::MotionResult::SUCCEEDED) {
+    //     outcome = "OK";
+    // } else if (result == diffnav::MotionResult::FAULTED ||
+    //            result == diffnav::MotionResult::CANCELLED) {
+    //     outcome = "ECHEC (faute ou annulation)";
+    // } else if (millis() - start_ms > TIMEOUT_MS) {
+    //     navigator.stop();
+    //     outcome = "TIMEOUT (robot bloque hors tolerance ?)";
+    // }
 
-    if (outcome != nullptr) {
-        motors.stop();
-        finished = true;
-        printReport(outcome);
-    }
+    // if (outcome != nullptr) {
+    //     motors.stop();
+    //     finished = true;
+    //     printReport(outcome);
+    // }
 }

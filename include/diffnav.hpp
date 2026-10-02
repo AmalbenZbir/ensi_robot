@@ -156,7 +156,7 @@ struct NavigatorConfig {
 
     float rotating_speed_mm_s = 260.0f;
     float rotating_ramping_acceleration_mm_s2 = 700.0f;
-    float rotating_breaking_acceleration_mm_s2 = 900.0f;
+    float rotating_breaking_acceleration_mm_s2 = 600.0f;
     float rotating_minimum_speed_mm_s = 35.0f;
 
     float phi_correction_kp =8.0f; 
