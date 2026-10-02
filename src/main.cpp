@@ -97,12 +97,8 @@ void loop() {
     motors.write(pwm_R, pwm_L);
 
     if (++cycle_count % PLOT_EVERY == 0) {
-        Serial.print(">target_R:"); Serial.println(target_speeds.speed_R_mm_s);
-        Serial.print(">speed_R:");  Serial.println(speed_R);
         Serial.print(">x_mm:");     Serial.println(odometry.state().pose.x_mm);
         Serial.print(">y_mm:");     Serial.println(odometry.state().pose.y_mm);
-        Serial.print(">lane_error:"); Serial.println(navigator.status().lane_error_mm);
-        Serial.print(">phi_error:");  Serial.println(navigator.status().phi_error_rad);
     }
 
     // Arret automatique une fois le mouvement termine
