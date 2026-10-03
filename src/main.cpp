@@ -8,18 +8,18 @@
 //                  TEST D'UN goTo (reglage)
 // =====================================================================
 // Le robot part de (0, 0) oriente vers +X (phi = 0).
-// goTo se deroule en 3 phases :
+// goTo se deroule en 3 phases, separees par une PAUSE :
 //   ALIGN        : rotation sur place vers la cible
 //   DRIVE_LINE   : ligne droite avec correction de cap et d'ecart lateral
 //   FINAL_ORIENT : rotation finale (seulement si USE_FINAL_PHI = true)
 
 // ---------- Le deplacement teste ----------
-const float TARGET_X_MM      = 500.0f;
-const float TARGET_Y_MM      = 300.0f;
-const float CRUISE_SPEED_MM_S = 300.0f;  // vitesse de croisiere en ligne droite
+const float TARGET_X_MM      = 400.0f;
+const float TARGET_Y_MM      = 200.0f;
+const float CRUISE_SPEED_MM_S = 250.0f;  // vitesse de croisiere en ligne droite
 const int   DIRECTION        = 1;        // 1 = marche avant, -1 = marche arriere
 const bool  USE_FINAL_PHI    = true;     // orientation finale imposee ?
-const float FINAL_PHI_DEG    = 0.0f;     // cap final absolu (si USE_FINAL_PHI)
+const float FINAL_PHI_DEG    = 80.0f;     // cap final absolu (si USE_FINAL_PHI)
 const unsigned long TIMEOUT_MS = 15000;
 
 // ---------- 1) Boucle de vitesse des roues (PI) ----------
@@ -38,25 +38,30 @@ const float WHEEL_SPACING_MM = 311.2313829856f;
 
 // ---------- 3) Rotations ALIGN et FINAL_ORIENT (valeurs du test de rotation) ----------
 const float ROTATING_SPEED_MM_S = 200.0f;  // goTo utilise la vitesse de la config, pas un argument
-const float ROT_ACCEL_MM_S2     = 700.0f;
+const float ROT_ACCEL_MM_S2     = 500.0f;
 const float ROT_BRAKE_MM_S2     = 600.0f;
-const float ROT_MIN_SPEED_MM_S  = 35.0f;
+const float ROT_MIN_SPEED_MM_S  = 70.0f;
 const float FINAL_PHI_KP        = 6.0f;    // sert aussi a la toute fin de la ligne droite
 
 // ---------- 4) Profil de la ligne droite ----------
 const float LINE_ACCEL_MM_S2    = 900.0f;
-const float LINE_BRAKE_MM_S2    = 1200.0f;
+const float LINE_BRAKE_MM_S2    = 600.0f;
 const float LINE_MIN_SPEED_MM_S = 55.0f;
 
 // ---------- 5) Tenue de trajectoire (pendant la ligne droite) ----------
-const float PHI_CORRECTION_KP      = 8.0f;   // correction de cap
-const float LANE_GAIN_S_INV        = 12.0f;  // correction d'ecart lateral (Stanley)
+const float PHI_CORRECTION_KP      = 4.0f;  
+// correction de cap
+const float LANE_GAIN_S_INV        = 8.5f;  // correction d'ecart lateral (Stanley)
 const float LANE_ANGLE_GAIN        = 1.5f;
 const float LANE_SOFTENING_MM_S    = 90.0f;
 
 // ---------- 6) Approche finale (derniers 45 mm) ----------
 const float FINAL_POSITION_KP_S_INV = 2.0f;   // vitesse = Kp x distance restante
 const float FINAL_SPEED_LIMIT_MM_S  = 120.0f;
+
+// ---------- 6 bis) Pause entre les phases ----------
+const uint16_t PHASE_PAUSE_MS       = 350;    // arret entre ALIGN / DRIVE_LINE / FINAL_ORIENT
+const uint8_t  MAX_REALIGN_ATTEMPTS = 3;      // re-alignements si le cap a derive
 
 // ---------- 7) Tolerances d'arrivee ----------
 const float POSITION_TOLERANCE_MM    = 2.0f;
@@ -102,6 +107,7 @@ const char* modeName(diffnav::MotionMode mode) {
         case diffnav::MotionMode::FINAL_ORIENT:   return "FINAL_ORIENT";
         case diffnav::MotionMode::EMERGENCY_STOP: return "EMERGENCY_STOP";
         case diffnav::MotionMode::FAULT:          return "FAULT";
+        case diffnav::MotionMode::PAUSE:          return "PAUSE";
     }
     return "?";
 }
@@ -180,6 +186,10 @@ void setup() {
 
     nav_cfg.final_position_kp_s_inv = FINAL_POSITION_KP_S_INV;
     nav_cfg.final_speed_limit_mm_s = FINAL_SPEED_LIMIT_MM_S;
+
+    // 1 cycle de controle = PERIOD_US microsecondes
+    nav_cfg.phase_pause_cycles = (uint16_t)((PHASE_PAUSE_MS * 1000UL) / PERIOD_US);
+    nav_cfg.max_realign_attempts = MAX_REALIGN_ATTEMPTS;
 
     nav_cfg.position_tolerance_mm = POSITION_TOLERANCE_MM;
     nav_cfg.lane_tolerance_mm = LANE_TOLERANCE_MM;
@@ -264,27 +274,25 @@ void loop() {
         Serial.print(">err_cap_deg:");  Serial.println(st.phi_error_rad * DEG_PER_RAD);
         Serial.print(">consigne_R:");   Serial.println(target_speeds.speed_R_mm_s);
         Serial.print(">vitesse_R:");    Serial.println(speed_R);
-        Serial.print(">consigne_L:");   Serial.println(target_speeds.speed_L_mm_s);
-        Serial.print(">vitesse_L:");    Serial.println(speed_L);
     }
 
-    // --- Fin du test ---
-    const char* outcome = nullptr;
+    // // --- Fin du test ---
+    // const char* outcome = nullptr;
 
-    if (st.result == diffnav::MotionResult::SUCCEEDED) {
-        outcome = "OK";
-    } else if (st.result == diffnav::MotionResult::FAULTED ||
-               st.result == diffnav::MotionResult::CANCELLED) {
-        outcome = "ECHEC (faute ou annulation)";
-    } else if (millis() - start_ms > TIMEOUT_MS) {
-        Serial.print("  bloque en phase "); Serial.println(modeName(st.mode));
-        navigator.stop();
-        outcome = "TIMEOUT";
-    }
+    // if (st.result == diffnav::MotionResult::SUCCEEDED) {
+    //     outcome = "OK";
+    // } else if (st.result == diffnav::MotionResult::FAULTED ||
+    //            st.result == diffnav::MotionResult::CANCELLED) {
+    //     outcome = "ECHEC (faute ou annulation)";
+    // } else if (millis() - start_ms > TIMEOUT_MS) {
+    //     Serial.print("  bloque en phase "); Serial.println(modeName(st.mode));
+    //     navigator.stop();
+    //     outcome = "TIMEOUT";
+    // }
 
-    if (outcome != nullptr) {
-        motors.stop();
-        finished = true;
-        printReport(outcome);
-    }
+    // if (outcome != nullptr) {
+    //     motors.stop();
+    //     finished = true;
+    //     printReport(outcome);
+    // }
 }

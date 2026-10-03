@@ -455,6 +455,8 @@ void Navigator::goTo(const Pose2D& current_pose,
     }
 
     go_to_active_ = true;
+    pending_phase_ = PendingPhase::NONE;
+    realign_attempts_ = 0;
     go_to_target_ = {target_x_mm, target_y_mm};
     go_to_cruise_speed_mm_s_ =
         cruise_speed_mm_s > 0.0f ? cruise_speed_mm_s : config_.default_cruise_speed_mm_s;
@@ -514,12 +516,9 @@ WheelSpeeds Navigator::updateAlignment(const OdometryState& odometry) {
 
     if (std::fabs(phi_error) <= config_.orientation_tolerance_rad && robotStopped(odometry)) {
         if (go_to_active_) {
-            // Alignment is complete. Reuse the normal straight controller for the second stage.
-            const Point2D target = go_to_target_;
-            const float speed = go_to_cruise_speed_mm_s_;
-            const int direction = go_to_direction_;
-            startStraightMovement(odometry.pose, target, speed, direction);
-            go_to_active_ = true;
+            // Alignement termine : pause avant la ligne droite. La ligne sera lancee par
+            // updatePause() depuis la position reelle, une fois le robot immobile.
+            startPause(PendingPhase::START_LINE);
             return {};
         }
 
@@ -621,16 +620,9 @@ WheelSpeeds Navigator::updateStraightMovement(const OdometryState& odometry) {
         if (settle_counter_ >= config_.settle_cycles) {
             // go_to can optionally end with a requested final robot orientation.
             if (go_to_active_ && go_to_use_final_phi_) {
-                go_to_active_ = false;
-                target_absolute_phi_rad_ =
-                    odometry.pose.absolute_phi_rad +
-                    wrapAngle(go_to_final_phi_rad_ - odometry.pose.phi_rad);
-                rotation_distance_mm_ =
-                    std::fabs(target_absolute_phi_rad_ - odometry.pose.absolute_phi_rad) *
-                    config_.wheel_spacing_mm * 0.5f;
-                rotating_speed_mm_s_ = config_.rotating_speed_mm_s;
-                settle_counter_ = 0;
-                status_.mode = MotionMode::FINAL_ORIENT;
+                // Position atteinte : pause avant la rotation finale. La rotation sera
+                // calculee par updatePause() depuis le cap reel apres l'arret.
+                startPause(PendingPhase::FINAL_ORIENT);
                 return {};
             }
 
@@ -690,6 +682,97 @@ WheelSpeeds Navigator::updateStraightMovement(const OdometryState& odometry) {
     return makeWheelSpeedCommand(signed_speed, angular_speed);
 }
 
+// ---------------------------------------------------------------------------
+// Pause entre deux phases d'un goTo
+// ---------------------------------------------------------------------------
+
+void Navigator::startPause(PendingPhase next_phase) {
+    pending_phase_ = next_phase;
+    pause_counter_ = config_.phase_pause_cycles;
+    settle_counter_ = 0;
+    status_.mode = MotionMode::PAUSE;
+    status_.result = MotionResult::RUNNING;
+}
+
+void Navigator::startFinalOrientation(const Pose2D& current_pose) {
+    go_to_active_ = false;
+    target_absolute_phi_rad_ =
+        current_pose.absolute_phi_rad + wrapAngle(go_to_final_phi_rad_ - current_pose.phi_rad);
+    rotation_distance_mm_ =
+        std::fabs(target_absolute_phi_rad_ - current_pose.absolute_phi_rad) *
+        config_.wheel_spacing_mm * 0.5f;
+    rotating_speed_mm_s_ = config_.rotating_speed_mm_s;
+    settle_counter_ = 0;
+    status_.mode = MotionMode::FINAL_ORIENT;
+    status_.result = MotionResult::RUNNING;
+}
+
+WheelSpeeds Navigator::updatePause(const OdometryState& odometry) {
+    // 1) Duree minimale : consigne nulle. Les WheelSpeedController remettent
+    //    eux-memes leur integrale a zero quand la consigne est sous 10 mm/s.
+    if (pause_counter_ > 0) {
+        --pause_counter_;
+        return {};
+    }
+
+    // 2) On attend en plus que le robot soit reellement immobile.
+    if (!robotStopped(odometry)) {
+        return {};
+    }
+
+    // 3) On lance la phase memorisee, a partir de la pose mesuree maintenant.
+    const PendingPhase next_phase = pending_phase_;
+    pending_phase_ = PendingPhase::NONE;
+    const Pose2D& pose = odometry.pose;
+
+    if (next_phase == PendingPhase::START_LINE) {
+        const float delta_x = go_to_target_.x - pose.x_mm;
+        const float delta_y = go_to_target_.y - pose.y_mm;
+
+        // Deja sur la cible (cas tres rare) : on passe a la fin du goTo.
+        if (distance2D(delta_x, delta_y) <= config_.position_tolerance_mm) {
+            if (go_to_use_final_phi_) {
+                startFinalOrientation(pose);
+            } else {
+                movementFinished();
+            }
+            return {};
+        }
+
+        // Le cap a pu deriver pendant le freinage : on le reverifie depuis la position reelle.
+        const float path_phi = std::atan2(delta_y, delta_x);
+        const float desired_phi =
+            wrapAngle(path_phi + (go_to_direction_ < 0 ? kPi : 0.0f));
+        const float phi_delta = wrapAngle(desired_phi - pose.phi_rad);
+
+        if (std::fabs(phi_delta) > config_.orientation_tolerance_rad &&
+            realign_attempts_ < config_.max_realign_attempts) {
+            // Petit re-alignement (nombre de tentatives limite pour ne jamais boucler).
+            ++realign_attempts_;
+            target_absolute_phi_rad_ = pose.absolute_phi_rad + phi_delta;
+            rotation_distance_mm_ = std::fabs(phi_delta) * config_.wheel_spacing_mm * 0.5f;
+            rotating_speed_mm_s_ = config_.rotating_speed_mm_s;
+            settle_counter_ = 0;
+            status_.mode = MotionMode::ALIGN;
+            return {};
+        }
+
+        startStraightMovement(pose, go_to_target_, go_to_cruise_speed_mm_s_, go_to_direction_);
+        if (status_.mode == MotionMode::DRIVE_LINE) {
+            go_to_active_ = true;
+        }
+        return {};
+    }
+
+    if (next_phase == PendingPhase::FINAL_ORIENT) {
+        startFinalOrientation(pose);
+        return {};
+    }
+
+    movementFinished();
+    return {};
+}
+
 WheelSpeeds Navigator::update(const OdometryState& odometry, float /*dt_s*/) {
     switch (status_.mode) {
         case MotionMode::IDLE:
@@ -709,6 +792,9 @@ WheelSpeeds Navigator::update(const OdometryState& odometry, float /*dt_s*/) {
         case MotionMode::ROTATE:
         case MotionMode::FINAL_ORIENT:
             return updateRotation(odometry);
+
+        case MotionMode::PAUSE:
+            return updatePause(odometry);
     }
 
     emergencyBreak(FaultCode::INVALID_COMMAND);

@@ -72,6 +72,7 @@ enum class MotionMode : uint8_t {
     FINAL_ORIENT,
     EMERGENCY_STOP,
     FAULT,
+    PAUSE,          // arret volontaire entre deux phases d'un goTo
 };
 
 enum class MotionResult : uint8_t {
@@ -129,9 +130,9 @@ struct NavCommand {
 };
 
 struct OdometryConfig {
-    float wheel_diameter_R_mm = 81.00808322364194f;
-    float wheel_diameter_L_mm = 80.80008300995295f;
-    float wheel_spacing_mm = 311.2313829856f;
+    float wheel_diameter_R_mm = 80.68052560698061f;
+    float wheel_diameter_L_mm = 80.47336644583292f;   
+    float wheel_spacing_mm = 308.0f;
     int32_t encoder_counts_per_revolution = 1600;
 
     // Encoder velocity is accumulated over a short window before filtering.
@@ -156,11 +157,11 @@ struct NavigatorConfig {
 
     float rotating_speed_mm_s = 260.0f;
     float rotating_ramping_acceleration_mm_s2 = 700.0f;
-    float rotating_breaking_acceleration_mm_s2 = 600.0f;
+    float rotating_breaking_acceleration_mm_s2 = 900.0f;
     float rotating_minimum_speed_mm_s = 35.0f;
 
-    float phi_correction_kp =8.0f; 
-    float lane_correction_gain_s_inv =12.0f;
+    float phi_correction_kp =6.0f; 
+    float lane_correction_gain_s_inv =10.0f;
     float lane_correction_angle_gain = 1.5f;
     float lane_correction_softening_mm_s = 90.0f;
     float maximum_angular_speed_rad_s = 5.5f;
@@ -175,6 +176,13 @@ struct NavigatorConfig {
     float orientation_tolerance_rad = 0.0349065850f;
     float stopped_speed_tolerance_mm_s = 12.0f;
     uint16_t settle_cycles = 8;
+
+    // Pause entre les phases d'un goTo (ALIGN -> DRIVE_LINE -> FINAL_ORIENT), en cycles
+    // de controle (1 cycle = 1 ms a 1 kHz). Vitesse nulle pendant ce temps, puis on
+    // attend en plus que le robot soit reellement arrete.
+    uint16_t phase_pause_cycles = 300;
+    // Nombre maximal de re-alignements si le cap a derive pendant la pause.
+    uint8_t max_realign_attempts = 3;
 };
 
 // Speed-controller parameters intentionally mirror the STM32 SPEED loop.
@@ -303,6 +311,12 @@ private:
     bool robotStopped(const OdometryState& odometry) const;
     void movementFinished();
 
+    // Pause entre deux phases d'un goTo.
+    enum class PendingPhase : uint8_t { NONE, START_LINE, FINAL_ORIENT };
+    void startPause(PendingPhase next_phase);
+    WheelSpeeds updatePause(const OdometryState& odometry);
+    void startFinalOrientation(const Pose2D& current_pose);
+
     NavigatorConfig config_{};
     MotionStatus status_{};
 
@@ -334,6 +348,11 @@ private:
     float go_to_final_phi_rad_ = 0.0f;
 
     uint16_t settle_counter_ = 0;
+
+    // Etat de la pause entre deux phases d'un goTo.
+    PendingPhase pending_phase_ = PendingPhase::NONE;  // phase a lancer apres la pause
+    uint16_t pause_counter_ = 0;                       // cycles de pause restants
+    uint8_t realign_attempts_ = 0;                     // re-alignements deja faits
 };
 
 }  // namespace diffnav
