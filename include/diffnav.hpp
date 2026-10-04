@@ -130,9 +130,9 @@ struct NavCommand {
 };
 
 struct OdometryConfig {
-    float wheel_diameter_R_mm = 80.68052560698061f;
-    float wheel_diameter_L_mm = 80.47336644583292f;   
-    float wheel_spacing_mm = 308.0f;
+    float wheel_diameter_R_mm = 81.12097658271956f;
+    float wheel_diameter_L_mm = 80.17098687242584f;   
+    float wheel_spacing_mm = 311.2313829856f;
     int32_t encoder_counts_per_revolution = 1600;
 
     // Encoder velocity is accumulated over a short window before filtering.
@@ -160,8 +160,8 @@ struct NavigatorConfig {
     float rotating_breaking_acceleration_mm_s2 = 900.0f;
     float rotating_minimum_speed_mm_s = 35.0f;
 
-    float phi_correction_kp =6.0f; 
-    float lane_correction_gain_s_inv =10.0f;
+    float phi_correction_kp =8.0f; 
+    float lane_correction_gain_s_inv =12.0f;
     float lane_correction_angle_gain = 1.5f;
     float lane_correction_softening_mm_s = 90.0f;
     float maximum_angular_speed_rad_s = 5.5f;
